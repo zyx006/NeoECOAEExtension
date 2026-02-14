@@ -1,6 +1,7 @@
 package cn.dancingsnow.neoecoae;
 
 
+import appeng.api.storage.StorageCells;
 import appeng.api.upgrades.Upgrades;
 import appeng.core.definitions.AEItems;
 import appeng.core.localization.GuiText;
@@ -15,6 +16,7 @@ import cn.dancingsnow.neoecoae.api.integration.IntegrationManager;
 import cn.dancingsnow.neoecoae.config.NEConfig;
 import cn.dancingsnow.neoecoae.data.NEDataGen;
 import cn.dancingsnow.neoecoae.items.ECOStorageCellItem;
+import cn.dancingsnow.neoecoae.items.cell.ECOStorageCellHandler;
 import cn.dancingsnow.neoecoae.registration.NERegistrate;
 import com.tterrag.registrate.util.entry.ItemEntry;
 import lombok.Getter;
@@ -74,6 +76,9 @@ public class NeoECOAE {
 
     private static void initUpgrades(FMLCommonSetupEvent event) {
         event.enqueueWork(() -> {
+            // Register ECO storage cell handler to enable IO Port compatibility
+            StorageCells.addCellHandler(new ECOStorageCellHandler());
+
             String storageCellGroup = GuiText.StorageCells.getTranslationKey();
 
             Upgrades.add(AEItems.SPEED_CARD, NEBlocks.INTEGRATED_WORKING_STATION.get(), 4);
