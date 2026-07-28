@@ -15,6 +15,12 @@ public class NELangGenerator {
         provider.add("jade.neoecoae.drive_mounted", "ECO Drive Mounted");
         provider.add("jade.neoecoae.drive_unmounted", "ECO Drive Unmounted");
         provider.add("jade.neoecoae.worker_threads", "Threads: %d/%d");
+        provider.add("jade.neoecoae.worker_tasks", "Crafting Tasks (%d):");
+        provider.add("jade.neoecoae.worker_task", "  %s x%s - %s");
+        provider.add("jade.neoecoae.worker_task.progress", "%d%%");
+        provider.add("jade.neoecoae.worker_task.waiting_output", "Waiting for output");
+        provider.add("jade.neoecoae.worker_task.unknown", "Unknown output");
+        provider.add("jade.neoecoae.worker_tasks.more", "  ... and %d more");
         provider.add("jade.neoecoae.overclocked", "Overclock Enabled");
         provider.add("jade.neoecoae.activeCooling", "Active Cooling Enabled");
         provider.add("jade.neoecoae.coolant", "Coolant: %d");
@@ -74,10 +80,21 @@ public class NELangGenerator {
             "The drivable storage matrix tier depends on the storage subsystem host controller"
         );
         provider.add("tooltip.neoecoae.storage.infinite_component_locked", "Cannot remove infinite components: stored contents cannot safely fit back into normal matrices");
+        provider.add("tooltip.neoecoae.infinite_component.unlock", "Insert 64 components and install 16 L9 storage matrices to unlock infinite storage");
+        provider.add("tooltip.neoecoae.storage.infinite_member", "Managed by the storage host");
         provider.add("tooltip.neoecoae.storage.infinite_member_locked", "Infinite storage matrices cannot be removed while the storage host is in infinite mode");
 
+        provider.add("cell_type.neoecoae.omni", "Omni");
+        provider.add("cell_type.neoecoae.complex_omni", "Complex Omni");
+        provider.add("cell_type.neoecoae.quantum_omni", "Quantum Omni");
+        provider.add("item.neoecoae.eco_mana_cell_housing", "ECO Storage Matrix Housing (Mana)");
+        provider.add("item.neoecoae.eco_mana_storage_cell_16m", "ECO - LE4 Storage Matrix (Mana)");
+        provider.add("item.neoecoae.eco_mana_storage_cell_64m", "ECO - LE6 Storage Matrix (Mana)");
+        provider.add("item.neoecoae.eco_mana_storage_cell_256m", "ECO - LE9 Storage Matrix (Mana)");
+
         provider.add("tooltip.neoecoae.crafting_system", "The core of the crafting subsystem");
-        provider.add("tooltip.neoecoae.crafting_parallels", "Parallel core provides parallel count to the crafting subsystem");
+        provider.add("tooltip.neoecoae.crafting_network_switch", "Links F9 crafting subsystem hosts on the same ME network");
+        provider.add("tooltip.neoecoae.crafting_parallels", "Parallel cores provide processing capacity for overflow overclock calculations");
         provider.add("tooltip.neoecoae.max_parallel_count", "Max parallel count +%d");
         provider.add("tooltip.neoecoae.overclocked", "When enabling overclocking:");
         provider.add("tooltip.neoecoae.active_cooling", "When enabling active cooling:");
@@ -85,7 +102,7 @@ public class NELangGenerator {
 
         addLangs(provider, "tooltip.neoecoae.crafting_worker",
             "ECO - FX Worker is the main part of the crafting subsystem",
-            "ECO - FX Worker can store 32 crafting jobs, processing 1 crafting job per crafting"
+            "Each FX Worker provides 1 thread at x1, or one thread per participating F host while network exchange is active"
         );
         provider.add("tooltip.neoecoae.crafting_jobs_l4", "Store Crafting Jobs: x%d [L4]");
         provider.add("tooltip.neoecoae.crafting_jobs_l6", "Store Crafting Jobs: x%d [L6]");
@@ -96,11 +113,20 @@ public class NELangGenerator {
 
         addLangs(provider, "tooltip.neoecoae.crafting_pattern_bus",
             "ECO - FD Smart Pattern Bus is the main part of the crafting subsystem",
-            "Each bus can store 63 patten",
-            "When encoding patten on the ME Encoding Terminal, you can use the adjacent button to quickly upload them"
+            "This bus currently stores %d patterns",
+            "When encoding patterns on the ME Encoding Terminal, you can use the adjacent button to upload them quickly"
         );
 
         provider.add("tooltip.neoecoae.computation_system", "The core of the computation subsystem");
+        provider.add("tooltip.neoecoae.computation_network_switch", "Links C9 computation subsystem hosts on the same ME network");
+        provider.add("tooltip.neoecoae.network_switch.multiplier", "Each linked host contributes x%d capacity");
+        provider.add("tooltip.neoecoae.network_switch.power_multiplier", "Power consumption while linked: x%d");
+        provider.add("tooltip.neoecoae.network_switch.requirement", "Requires at least 2 linked hosts; a single host remains at x1");
+        provider.add("tooltip.neoecoae.network_switch.computation_cooling", "Requires a cooling controller on this host");
+        provider.add("tooltip.neoecoae.network_switch.computation_high_energy_cooling", "Requires a C9 cooling controller on this host");
+        provider.add("tooltip.neoecoae.network_switch.computation_ultimate", "8 high-energy C9 hosts with at least 10 Threading Cores and every drive filled raise aggregate parallel count to INT32_MAX and CPU storage to INT64_MAX");
+        provider.add("tooltip.neoecoae.network_switch.crafting_cooling", "Shared pool: 4 coolant per active task thread per tick; active exchange continuously draws full rated power");
+        provider.add("tooltip.neoecoae.network_switch.crafting_high_energy_cooling", "Highest-tier shared pool: 16 coolant per active task thread per tick; active exchange continuously draws full rated power");
         addLangs(provider, "tooltip.neoecoae.computation_system_desc",
             "The computation subsystem introduces virtual Crafting Processors (vCPUs):",
             "The host provides only one vCPU to the ME network at a time, with capacity equal to all currently available bytes in the subsystem",

@@ -284,9 +284,17 @@ public class ECOCraftingCPULogic {
                 }
 
                 var details = task.getKey();
+                // 同一调度轮次内按任务收集一次提供者列表，避免每次推送都重建列表并重复查询。
+                List<ICraftingProvider> providers = collectAvailableProviders(craftingService, details);
+                if (providers.isEmpty()) {
+                    continue;
+                }
+                List<ECOCraftingPatternBusBlockEntity> patternBuses = collectPatternBuses(providers);
+                // FastPath 元数据只有 ECO 智能样板总线能够消费；纯第三方提供者不应支付其构建成本。
+                boolean fastPathCandidate = !patternBuses.isEmpty();
+
                 while (task.getValue().value > 0 && pushedPatterns < maxPatterns) {
-                    List<ICraftingProvider> providers = collectAvailableProviders(craftingService, details);
-                    if (providers.isEmpty()) {
+                    if (!hasReadyProvider(providers)) {
                         continue taskLoop;
                     }
 
@@ -300,15 +308,17 @@ public class ECOCraftingCPULogic {
                     }
 
                     ECOExtractedPatternExecution execution = ECOExtractedPatternExecution.create(
-                            details, craftingContainer, expectedOutputs, expectedContainerItems, level);
+                            details, craftingContainer, expectedOutputs, expectedContainerItems, level,
+                            fastPathCandidate);
 
-                    var patternPower = CraftingCpuHelper.calculatePatternPower(craftingContainer);
+                    var patternPower = CraftingCpuHelper.calculatePatternPower(craftingContainer)
+                        * cpu.getCluster().getNetworkPowerMultiplier();
                     int batchResult = tryPushVerifiedFastPathBatch(
                             job,
                             details,
                             execution,
                             craftingContainer,
-                             providers,
+                             patternBuses,
                              energyService,
                              patternPower,
                              task.getValue().value);
@@ -423,16 +433,38 @@ public class ECOCraftingCPULogic {
         return providers;
     }
 
+    private static List<ECOCraftingPatternBusBlockEntity> collectPatternBuses(List<ICraftingProvider> providers) {
+        List<ECOCraftingPatternBusBlockEntity> patternBuses = null;
+        for (ICraftingProvider provider : providers) {
+            if (provider instanceof ECOCraftingPatternBusBlockEntity patternBus) {
+                if (patternBuses == null) {
+                    patternBuses = new ArrayList<>();
+                }
+                patternBuses.add(patternBus);
+            }
+        }
+        return patternBuses == null ? List.of() : patternBuses;
+    }
+
+    private static boolean hasReadyProvider(List<ICraftingProvider> providers) {
+        for (ICraftingProvider provider : providers) {
+            if (!provider.isBusy()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private int tryPushVerifiedFastPathBatch(
             ExecutingCraftingJob job,
             IPatternDetails details,
             ECOExtractedPatternExecution execution,
             KeyCounter[] firstCraftingContainer,
-            List<ICraftingProvider> providers,
+            List<ECOCraftingPatternBusBlockEntity> patternBuses,
             IEnergyService energyService,
             double patternPower,
             long taskRemaining) {
-        if (!canAttemptBatchFastPath(execution) || taskRemaining <= 1) {
+        if (patternBuses.isEmpty() || !canAttemptBatchFastPath(execution) || taskRemaining <= 1) {
             return 0;
         }
 
@@ -442,10 +474,7 @@ public class ECOCraftingCPULogic {
         ECOCraftingPatternBusBlockEntity selectedPatternBus = null;
         ECOCraftingPatternBusBlockEntity.BatchFastPathOffer selectedOffer = null;
         Set<ECOCraftingSystemBlockEntity> visitedControllers = new HashSet<>();
-        for (ICraftingProvider provider : providers) {
-            if (!(provider instanceof ECOCraftingPatternBusBlockEntity patternBus)) {
-                continue;
-            }
+        for (ECOCraftingPatternBusBlockEntity patternBus : patternBuses) {
             ECOCraftingSystemBlockEntity controller = patternBus.getCraftingController();
             if (controller == null || !visitedControllers.add(controller)) {
                 continue;
@@ -471,7 +500,9 @@ public class ECOCraftingCPULogic {
 
         int batchSize = Math.min(requested, selectedOffer.maxBatchSize());
         batchSize = Math.min(batchSize, maxBatchSizeFromEnergy(energyService, patternPower, batchSize));
-        batchSize = controller.getCraftingCoolantCraftLimit(5, controller.getEffectiveOverclockTimes(), batchSize);
+        batchSize = controller.getCraftingCoolantCraftLimit(
+            5, controller.getCoolingRequirementForCurrentNetwork(), batchSize
+        );
         if (batchSize <= 1) {
             return 0;
         }
@@ -588,22 +619,39 @@ public class ECOCraftingCPULogic {
 
     private void recordPushedPattern(
             ExecutingCraftingJob job, ECOExtractedPatternExecution execution, int craftCount) {
-        int multiplier = Math.max(1, craftCount);
         for (var expectedOutput : execution.expectedOutputs()) {
-            job.waitingFor.insert(expectedOutput.what(), expectedOutput.amount() * multiplier, Actionable.MODULATE);
+            job.waitingFor.insert(
+                    expectedOutput.what(),
+                    scaledPatternAmount(expectedOutput.amount(), craftCount),
+                    Actionable.MODULATE);
         }
         postGenericStackKeysChange(execution.expectedOutputs());
 
         for (var expectedContainerItem : execution.expectedContainerItems()) {
-            job.waitingFor.insert(
-                    expectedContainerItem.what(), expectedContainerItem.amount() * multiplier, Actionable.MODULATE);
-            job.timeTracker.addMaxItems(
-                    expectedContainerItem.amount() * multiplier,
-                    expectedContainerItem.what().getType());
+            long scaled = scaledPatternAmount(expectedContainerItem.amount(), craftCount);
+            job.waitingFor.insert(expectedContainerItem.what(), scaled, Actionable.MODULATE);
+            job.timeTracker.addMaxItems(scaled, expectedContainerItem.what().getType());
         }
         postGenericStackKeysChange(execution.expectedContainerItems());
 
         cpu.markDirty();
+    }
+
+    /**
+     * 计算一次批量推送应记入 waitingFor 的数量。
+     *
+     * <p>饱和而非溢出：负的 waitingFor 记账会让 CPU 误以为产物已经交付，从而丢失产出。
+     */
+    static long scaledPatternAmount(long perCraftAmount, int craftCount) {
+        if (perCraftAmount <= 0L) {
+            return 0L;
+        }
+        int multiplier = Math.max(1, craftCount);
+        try {
+            return Math.multiplyExact(perCraftAmount, (long) multiplier);
+        } catch (ArithmeticException e) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /**
@@ -638,17 +686,40 @@ public class ECOCraftingCPULogic {
 
         if (what.matches(job.finalOutput)) {
             ExecutingCraftingJob currentJob = job;
-            long acceptedOwnership = currentJob.bufferedFinalOutput.accept(amount, type);
-            if (type == Actionable.MODULATE && acceptedOwnership > 0L) {
+            if (type == Actionable.SIMULATE) {
+                return amount;
+            }
+
+            // A final-output item can also be the input of a remaining task (for example,
+            // A + B -> 2A). Keep the amount needed to continue that task in local storage;
+            // only the surplus belongs to the requester.
+            long held = inventory.extract(what, Long.MAX_VALUE, Actionable.SIMULATE);
+            long pendingInput = pendingInputAmount(what);
+            long retained = Math.min(amount, Math.max(0L, pendingInput - held));
+            if (retained > 0L) {
+                currentJob.timeTracker.decrementItems(retained, what.getType());
+                currentJob.waitingFor.extract(what, retained, Actionable.MODULATE);
+                inventory.insert(what, retained, Actionable.MODULATE);
+            }
+
+            long finalAmount = amount - retained;
+            long acceptedOwnership = finalAmount <= 0L
+                ? 0L
+                : currentJob.bufferedFinalOutput.accept(finalAmount, Actionable.MODULATE);
+            if (acceptedOwnership > 0L) {
                 // Ownership commits here. Delivery happens separately, so a network callback cannot make the Worker
-                // retry or make this CPU accept the same physical output again.
+                // retry or make the same physical output again.
                 currentJob.timeTracker.decrementItems(acceptedOwnership, what.getType());
                 currentJob.waitingFor.extract(what, acceptedOwnership, Actionable.MODULATE);
+            }
+            if (retained > 0L || acceptedOwnership > 0L) {
                 postChange(what);
                 cpu.markDirty();
-                drainBufferedFinalOutput(currentJob);
+                if (acceptedOwnership > 0L) {
+                    drainBufferedFinalOutput(currentJob);
+                }
             }
-            return acceptedOwnership;
+            return retained + acceptedOwnership;
         } else {
             if (type == Actionable.MODULATE) {
                 inventory.insert(what, amount, Actionable.MODULATE);
@@ -656,6 +727,32 @@ public class ECOCraftingCPULogic {
         }
 
         return amount;
+    }
+
+    private long pendingInputAmount(AEKey what) {
+        if (job == null) {
+            return 0L;
+        }
+        long total = 0L;
+        for (var task : job.tasks.entrySet()) {
+            long batches = task.getValue().value;
+            if (batches <= 0L) {
+                continue;
+            }
+            long perBatch = 0L;
+            for (var input : task.getKey().getInputs()) {
+                long selectedAmount = 0L;
+                for (var possible : input.getPossibleInputs()) {
+                    if (possible != null && possible.amount() > 0L && what.equals(possible.what())) {
+                        selectedAmount = Math.max(selectedAmount,
+                            Math.multiplyExact(possible.amount(), input.getMultiplier()));
+                    }
+                }
+                perBatch = Math.addExact(perBatch, selectedAmount);
+            }
+            total = Math.addExact(total, Math.multiplyExact(perBatch, batches));
+        }
+        return total;
     }
 
     private long deliverFinalOutput(AEKey what, long amount, Actionable mode) {

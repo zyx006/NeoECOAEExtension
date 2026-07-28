@@ -11,6 +11,7 @@ import cn.dancingsnow.neoecoae.blocks.entity.crafting.ECOFluidOutputHatchBlockEn
 import lombok.Getter;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +29,10 @@ public class NECraftingCluster extends NECluster<NECraftingCluster> {
     private ECOFluidInputHatchBlockEntity inputHatch = null;
     @Getter
     private ECOFluidOutputHatchBlockEntity outputHatch = null;
+
+    @Getter
+    @Nullable
+    private NECraftingNetworkCluster networkCluster;
 
     public NECraftingCluster(BlockPos boundMin, BlockPos boundMax) {
         super(boundMin, boundMax);
@@ -64,5 +69,29 @@ public class NECraftingCluster extends NECluster<NECraftingCluster> {
         if (blockEntity instanceof ECOFluidOutputHatchBlockEntity outputHatchBlockEntity) {
             this.outputHatch = outputHatchBlockEntity;
         }
+    }
+
+    public void setNetworkCluster(@Nullable NECraftingNetworkCluster networkCluster) {
+        if (this.networkCluster == networkCluster) {
+            return;
+        }
+        this.networkCluster = networkCluster;
+        if (networkCluster == null && controller != null) {
+            controller.onNetworkStateChanged();
+        }
+    }
+
+    @Override
+    protected boolean hasLinkedNetworkPeers() {
+        return networkCluster != null && networkCluster.getMemberCount() > 1;
+    }
+
+    @Override
+    public int getNetworkMultiplier() {
+        int configuredMultiplier = getConfiguredNetworkMultiplier();
+        if (configuredMultiplier <= 1 || networkCluster == null) {
+            return 1;
+        }
+        return networkCluster.hasCoolingForNetworkMultiplier(configuredMultiplier) ? configuredMultiplier : 1;
     }
 }

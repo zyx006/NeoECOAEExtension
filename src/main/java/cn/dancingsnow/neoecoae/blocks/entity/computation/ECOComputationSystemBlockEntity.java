@@ -11,13 +11,15 @@ import cn.dancingsnow.neoecoae.api.me.ElapsedTimeTracker;
 import cn.dancingsnow.neoecoae.gui.task.ComputationTaskEntry;
 import cn.dancingsnow.neoecoae.blocks.computation.ECOComputationSystem;
 import cn.dancingsnow.neoecoae.gui.computation.ComputationHostPanelUI;
+import cn.dancingsnow.neoecoae.gui.common.HostNetworkStatusElement;
 import cn.dancingsnow.neoecoae.gui.multiblock.MultiblockBuilderUI;
 import cn.dancingsnow.neoecoae.gui.theme.NEStyleSheets;
-import cn.dancingsnow.neoecoae.items.ECOComputationCellItem;
 import cn.dancingsnow.neoecoae.multiblock.placement.MultiBlockBuildSession;
 import cn.dancingsnow.neoecoae.multiblock.definition.MultiBlockDefinition;
 import cn.dancingsnow.neoecoae.multiblock.placement.MultiBlockPlacementPlan;
 import cn.dancingsnow.neoecoae.multiblock.placement.MultiBlockPlacementService;
+import cn.dancingsnow.neoecoae.multiblock.network.NELogicalNetworkManager;
+import cn.dancingsnow.neoecoae.multiblock.network.NENetworkSwitchUtil;
 import com.lowdragmc.lowdraglib2.gui.factory.BlockUIMenuType;
 import com.lowdragmc.lowdraglib2.gui.ui.ModularUI;
 import com.lowdragmc.lowdraglib2.gui.ui.UI;
@@ -35,6 +37,7 @@ import dev.vfyjxf.taffy.style.TaffyPosition;
 import lombok.Getter;
 import lombok.Setter;
 import net.minecraft.core.BlockPos;
+import appeng.api.networking.IGridNodeListener;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -85,15 +88,37 @@ public class ECOComputationSystemBlockEntity extends AbstractComputationBlockEnt
     }
 
     @Override
+    public void onMainNodeStateChanged(IGridNodeListener.State reason) {
+        super.onMainNodeStateChanged(reason);
+        if (cluster != null && cluster.isNetworkMode()) {
+            NELogicalNetworkManager.refresh(cluster);
+        }
+    }
+
+    @Override
     public void updateState(boolean updateExposed) {
         if (isServerStopping()) {
             return;
         }
         super.updateState(updateExposed);
+        if (level instanceof ServerLevel serverLevel) {
+            if (formed) {
+                NENetworkSwitchUtil.syncFormed(serverLevel, worldPosition, getBlockState(), mirrored);
+            } else {
+                NENetworkSwitchUtil.clearFormed(serverLevel, worldPosition, getBlockState());
+            }
+        }
         if (level != null) {
             BlockState state = level.getBlockState(worldPosition);
-            if (state.hasProperty(ECOComputationSystem.MIRRORED)) {
-                BlockState newState = state.setValue(ECOComputationSystem.MIRRORED, formed && mirrored);
+            if (state.hasProperty(ECOComputationSystem.MIRRORED)
+                && state.hasProperty(ECOComputationSystem.NETWORK_SWITCH)
+                && state.hasProperty(ECOComputationSystem.HIGH_ENERGY_NETWORK_SWITCH)) {
+                boolean highEnergyNetworkMode = formed && cluster != null && cluster.isHighEnergyNetworkMode();
+                BlockState newState = state
+                    .setValue(ECOComputationSystem.MIRRORED, formed && mirrored)
+                    .setValue(ECOComputationSystem.NETWORK_SWITCH,
+                        formed && cluster != null && cluster.isNetworkMode() && !highEnergyNetworkMode)
+                    .setValue(ECOComputationSystem.HIGH_ENERGY_NETWORK_SWITCH, highEnergyNetworkMode);
                 if (newState != state) {
                     level.setBlock(
                         worldPosition,
@@ -149,19 +174,28 @@ public class ECOComputationSystemBlockEntity extends AbstractComputationBlockEnt
 
         UIElement root = new UIElement().layout(layout -> layout
             .width(340)
-            .height(232)
+            .height(242)
             .flexDirection(FlexDirection.COLUMN))
             .addClasses("panel_bg", "eco-computation-host");
 
         UIElement header = new UIElement().layout(layout -> layout
             .widthPercent(100)
-            .height(18)
+            .height(28)
             .flexDirection(FlexDirection.ROW)
             .alignItems(AlignItems.CENTER));
-        header.addChild(new TextElement()
+        UIElement titleBlock = new UIElement().layout(layout -> layout
+            .flex(1)
+            .height(24)
+            .flexDirection(FlexDirection.COLUMN)
+            .gapAll(2));
+        titleBlock.addChild(new TextElement()
             .setText(getItemFromBlockEntity().getDescription())
             .textStyle(ECOComputationSystemBlockEntity::titleTextStyle)
-            .layout(layout -> layout.flex(1)));
+            .layout(layout -> layout.widthPercent(100).height(10)));
+        titleBlock.addChild(HostNetworkStatusElement.create(
+            () -> cluster == null ? 1 : cluster.getNetworkMultiplier(),
+            () -> getMainNode().isOnline() && getMainNode().getGrid() != null));
+        header.addChild(titleBlock);
         header.addChild(ComputationHostPanelUI.createCpuSelectionButton(panelConfig));
         root.addChild(header);
 
@@ -208,6 +242,13 @@ public class ECOComputationSystemBlockEntity extends AbstractComputationBlockEnt
     }
 
     public CpuSelectionMode getCpuSelectionMode() {
+        if (cluster != null && cluster.getNetworkCluster() != null) {
+            return cluster.getNetworkCluster().getSelectionMode();
+        }
+        return getLocalSelectionMode();
+    }
+
+    public CpuSelectionMode getLocalSelectionMode() {
         CpuSelectionMode[] values = CpuSelectionMode.values();
         if (cpuSelectionMode < 0 || cpuSelectionMode >= values.length) {
             return CpuSelectionMode.ANY;
@@ -216,7 +257,20 @@ public class ECOComputationSystemBlockEntity extends AbstractComputationBlockEnt
     }
 
     public void setCpuSelectionMode(CpuSelectionMode mode) {
+        if (cluster != null && cluster.getNetworkCluster() != null) {
+            cluster.getNetworkCluster().setSelectionMode(mode);
+            return;
+        }
+        setLocalSelectionMode(mode);
+    }
+
+    public void setLocalSelectionMode(CpuSelectionMode mode) {
         this.cpuSelectionMode = mode.ordinal();
+        setChanged();
+        markForUpdate();
+    }
+
+    public void onNetworkStateChanged() {
         setChanged();
         markForUpdate();
     }
@@ -336,25 +390,7 @@ public class ECOComputationSystemBlockEntity extends AbstractComputationBlockEnt
     }
 
     private long getTotalBytes() {
-        if (cluster == null) {
-            return 0;
-        }
-        long total = 0;
-        for (ECOComputationDriveBlockEntity drive : cluster.getUpperDrives()) {
-            total += getDriveBytes(drive);
-        }
-        for (ECOComputationDriveBlockEntity drive : cluster.getLowerDrives()) {
-            total += getDriveBytes(drive);
-        }
-        return total;
-    }
-
-    private static long getDriveBytes(ECOComputationDriveBlockEntity drive) {
-        ItemStack cellStack = drive.getCellStack();
-        if (cellStack != null && cellStack.getItem() instanceof ECOComputationCellItem cellItem) {
-            return cellItem.getTier().getCPUTotalBytes();
-        }
-        return 0;
+        return cluster == null ? 0 : cluster.getTotalStorage();
     }
 
     private UIElement buildPanel(BlockUIMenuType.BlockUIHolder holder) {
